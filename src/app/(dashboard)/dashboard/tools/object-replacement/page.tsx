@@ -2,6 +2,9 @@
 
 import React, { useState, useRef } from "react";
 import { useApp } from "../../../../../context/AppContext";
+import { useAuth } from "../../../../../context/AuthContext";
+import { storage } from "../../../../../lib/appwrite";
+import { ID } from "appwrite";
 import { 
   Upload, 
   Brush, 
@@ -16,6 +19,7 @@ import { MOCK_SAMPLE_FACES, MOCK_OBJECTS } from "../../../../../lib/mockData";
 
 export default function ObjectReplacementPage() {
   const { credits, spendCredits, saveGeneration } = useApp();
+  const { user } = useAuth();
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [replacementPrompt, setReplacementPrompt] = useState("");
   const [selectedMaskArea, setSelectedMaskArea] = useState<{x: number, y: number} | null>(null);
@@ -93,28 +97,87 @@ export default function ObjectReplacementPage() {
 
     setIsProcessing(true);
     setProcessProgress(0);
+    setProcessStep("Uploading image to storage...");
 
-    for (let i = 0; i < processSteps.length; i++) {
-      setProcessStep(processSteps[i]);
-      setProcessProgress(((i + 1) / processSteps.length) * 100);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      // Convert base64 to blob for upload
+      const response = await fetch(uploadedImage);
+      const blob = await response.blob();
+      const file = new File([blob], "source-image.jpg", { type: "image/jpeg" });
+
+      // Upload to Appwrite Storage
+      const STORAGE_BUCKET_ID = process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_ID || "ai-images";
+      let uploadedImageUrl = uploadedImage;
+
+      if (storage) {
+        try {
+          setProcessStep("Uploading to secure storage...");
+          setProcessProgress(25);
+
+          const uploadResult = await storage.createFile(
+            STORAGE_BUCKET_ID,
+            ID.unique(),
+            file
+          );
+
+          uploadedImageUrl = storage.getFilePreview(
+            STORAGE_BUCKET_ID,
+            uploadResult.$id
+          ).toString();
+        } catch (storageError) {
+          console.error("Storage upload failed, using base64:", storageError);
+        }
+      }
+
+      // Call API route for object replacement
+      setProcessStep("Processing with AI model...");
+      setProcessProgress(50);
+
+      const apiResponse = await fetch("/api/object-replacement", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          imageUrl: uploadedImageUrl,
+          objectPrompt: replacementPrompt,
+          userId: user?.id || "guest",
+          objectMask: selectedMaskArea ? JSON.stringify(selectedMaskArea) : undefined,
+        }),
+      });
+
+      const apiData = await apiResponse.json();
+
+      if (!apiResponse.ok || !apiData.success) {
+        throw new Error(apiData.error || "Object replacement failed");
+      }
+
+      setProcessStep("Finalizing result...");
+      setProcessProgress(90);
+
+      // Deduct credits
+      await spendCredits(3, `Object Replacement: ${replacementPrompt}`);
+
+      // Save generation
+      await saveGeneration(
+        "object-replacement",
+        uploadedImageUrl,
+        apiData.outputImageUrl,
+        replacementPrompt
+      );
+
+      setResultImage(apiData.outputImageUrl);
+      setProcessProgress(100);
+      setProcessStep("");
+
+    } catch (error) {
+      console.error("Object replacement error:", error);
+      alert(`Object replacement failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setIsProcessing(false);
+      setProcessProgress(0);
+      setProcessStep("");
     }
-
-    await spendCredits(3, `Object Replacement: ${replacementPrompt}`);
-
-    const objectOutput = "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?q=80&w=600&auto=format&fit=crop";
-    setResultImage(objectOutput);
-
-    await saveGeneration(
-      "object-replacement",
-      uploadedImage,
-      objectOutput,
-      replacementPrompt
-    );
-
-    setIsProcessing(false);
-    setProcessProgress(0);
-    setProcessStep("");
   };
 
   const handleReset = () => {

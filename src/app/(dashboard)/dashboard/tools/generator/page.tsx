@@ -2,6 +2,9 @@
 
 import React, { useState, useRef } from "react";
 import { useApp } from "../../../../../context/AppContext";
+import { useAuth } from "../../../../../context/AuthContext";
+import { storage } from "../../../../../lib/appwrite";
+import { ID } from "appwrite";
 import { 
   Upload, 
   Sparkles, 
@@ -15,10 +18,11 @@ import {
   Search,
   ChevronDown
 } from "lucide-react";
-import { CATEGORIES, DEFAULT_THEMES, GENERATOR_OUTPUT_MAPPING, MOCK_SAMPLE_FACES } from "../../../../../lib/mockData";
+import { CATEGORIES, DEFAULT_THEMES, MOCK_SAMPLE_FACES } from "../../../../../lib/mockData";
 
 export default function GeneratorPage() {
   const { credits, spendCredits, saveGeneration } = useApp();
+  const { user } = useAuth();
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [selectedTheme, setSelectedTheme] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -88,31 +92,88 @@ export default function GeneratorPage() {
 
     setIsGenerating(true);
     setGenerationProgress(0);
+    setGenerationStep("Uploading image to storage...");
 
-    for (let i = 0; i < generationSteps.length; i++) {
-      setGenerationStep(generationSteps[i]);
-      setGenerationProgress(((i + 1) / generationSteps.length) * 100);
-      await new Promise(resolve => setTimeout(resolve, 1200));
+    try {
+      // Convert base64 to blob for upload
+      const response = await fetch(uploadedImage);
+      const blob = await response.blob();
+      const file = new File([blob], "source-image.jpg", { type: "image/jpeg" });
+
+      // Upload to Appwrite Storage
+      const STORAGE_BUCKET_ID = process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_ID || "ai-images";
+      let uploadedImageUrl = uploadedImage;
+
+      if (storage) {
+        try {
+          setGenerationStep("Uploading to secure storage...");
+          setGenerationProgress(25);
+
+          const uploadResult = await storage.createFile(
+            STORAGE_BUCKET_ID,
+            ID.unique(),
+            file
+          );
+
+          uploadedImageUrl = storage.getFilePreview(
+            STORAGE_BUCKET_ID,
+            uploadResult.$id
+          ).toString();
+        } catch (storageError) {
+          console.error("Storage upload failed, using base64:", storageError);
+        }
+      }
+
+      // Call API route for generation
+      setGenerationStep("Processing with AI model...");
+      setGenerationProgress(50);
+
+      const theme = DEFAULT_THEMES.find(t => t.id === selectedTheme);
+      const apiResponse = await fetch("/api/generator", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sourceImageUrl: uploadedImageUrl,
+          prompt: theme?.prompt || "professional studio portrait",
+          userId: user?.id || "guest",
+          themeName: theme?.name,
+        }),
+      });
+
+      const apiData = await apiResponse.json();
+
+      if (!apiResponse.ok || !apiData.success) {
+        throw new Error(apiData.error || "Generation failed");
+      }
+
+      setGenerationStep("Finalizing result...");
+      setGenerationProgress(90);
+
+      // Deduct credits
+      await spendCredits(3, `Generated photo using theme '${theme?.name}'`);
+
+      // Save generation
+      await saveGeneration(
+        "generator",
+        uploadedImageUrl,
+        apiData.outputImageUrl,
+        theme?.name
+      );
+
+      setGeneratedImage(apiData.outputImageUrl);
+      setGenerationProgress(100);
+      setGenerationStep("");
+
+    } catch (error) {
+      console.error("Generation error:", error);
+      alert(`Generation failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setIsGenerating(false);
+      setGenerationProgress(0);
+      setGenerationStep("");
     }
-
-    // Deduct credits
-    await spendCredits(3, `Generated photo using theme '${DEFAULT_THEMES.find(t => t.id === selectedTheme)?.name}'`);
-
-    // Get output image from mapping or fallback
-    const outputImage = GENERATOR_OUTPUT_MAPPING[uploadedImage] || GENERATOR_OUTPUT_MAPPING[MOCK_SAMPLE_FACES[0].url] || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=600&auto=format&fit=crop";
-    setGeneratedImage(outputImage);
-
-    // Save generation
-    await saveGeneration(
-      "generator",
-      uploadedImage,
-      outputImage,
-      DEFAULT_THEMES.find(t => t.id === selectedTheme)?.name
-    );
-
-    setIsGenerating(false);
-    setGenerationProgress(0);
-    setGenerationStep("");
   };
 
   const handleReset = () => {
