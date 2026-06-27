@@ -37,34 +37,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const fetchUser = async () => {
-      if (isAppwriteConfigured) {
-        try {
-          const appwriteUser = await account.get();
-          // Load role from prefs or default to user
-          const prefs = await account.getPrefs();
-          setUser({
-            id: appwriteUser.$id,
-            name: appwriteUser.name,
-            email: appwriteUser.email,
-            role: (prefs.role as UserRole) || "user",
-          });
-        } catch {
-          setUser(null);
-        } finally {
-          setLoading(false);
-        }
-      } else {
-        // Mock Mode: check localStorage for saved session
-        if (typeof window !== "undefined") {
-          const savedUser = localStorage.getItem("ai_studio_active_user");
-          if (savedUser) {
-            setUser(JSON.parse(savedUser));
-          } else {
-            // Default to mock developer user
-            setUser(MOCK_USER);
-            localStorage.setItem("ai_studio_active_user", JSON.stringify(MOCK_USER));
-          }
-        }
+      if (!isAppwriteConfigured) {
+        console.error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+      
+      try {
+        const appwriteUser = await account.get();
+        // Load role from prefs or default to user
+        const prefs = await account.getPrefs();
+        setUser({
+          id: appwriteUser.$id,
+          name: appwriteUser.name,
+          email: appwriteUser.email,
+          role: (prefs.role as UserRole) || "user",
+        });
+      } catch {
+        setUser(null);
+      } finally {
         setLoading(false);
       }
     };
@@ -90,15 +82,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw err;
       }
     } else {
-      // Mock Login
-      const mockSession: UserSession = {
-        id: "u_" + Math.random().toString(36).substring(2, 9),
-        name: email.split("@")[0].toUpperCase(),
-        email,
-        role: "user",
-      };
-      setUser(mockSession);
-      localStorage.setItem("ai_studio_active_user", JSON.stringify(mockSession));
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
     setLoading(false);
   };
@@ -122,47 +106,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw err;
       }
     } else {
-      // Mock Register
-      const mockSession: UserSession = {
-        id: "u_" + Math.random().toString(36).substring(2, 9),
-        name,
-        email,
-        role: "user",
-      };
-      setUser(mockSession);
-      localStorage.setItem("ai_studio_active_user", JSON.stringify(mockSession));
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
     setLoading(false);
   };
 
   const logout = async () => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     setLoading(true);
-    if (isAppwriteConfigured) {
-      try {
-        await account.deleteSession("current");
-      } catch (e) {
-        console.error(e);
-      }
+    try {
+      await account.deleteSession("current");
+    } catch (e) {
+      console.error(e);
     }
     setUser(null);
-    localStorage.removeItem("ai_studio_active_user");
     setLoading(false);
   };
 
   const switchRole = async (role: UserRole) => {
-    if (!user) return;
+    if (!user || !isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     const updated = { ...user, role };
     setUser(updated);
     
-    if (isAppwriteConfigured) {
-      try {
-        const prefs = await account.getPrefs();
-        await account.updatePrefs({ ...prefs, role });
-      } catch (e) {
-        console.error(e);
-      }
-    } else {
-      localStorage.setItem("ai_studio_active_user", JSON.stringify(updated));
+    try {
+      const prefs = await account.getPrefs();
+      await account.updatePrefs({ ...prefs, role });
+    } catch (e) {
+      console.error(e);
     }
   };
 

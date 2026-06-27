@@ -2,6 +2,9 @@
 
 import React, { useState, useRef } from "react";
 import { useApp } from "../../../../../context/AppContext";
+import { useAuth } from "../../../../../context/AuthContext";
+import { storage } from "../../../../../lib/appwrite";
+import { ID } from "appwrite";
 import { 
   Upload, 
   RefreshCw, 
@@ -77,6 +80,7 @@ const STYLE_PRESETS = [
 
 export default function StyleTransferPage() {
   const { credits, spendCredits, saveGeneration } = useApp();
+  const { user } = useAuth();
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -137,28 +141,89 @@ export default function StyleTransferPage() {
 
     setIsProcessing(true);
     setProcessProgress(0);
+    setProcessStep("Uploading image to storage...");
 
-    for (let i = 0; i < processSteps.length; i++) {
-      setProcessStep(processSteps[i]);
-      setProcessProgress(((i + 1) / processSteps.length) * 100);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      // Convert base64 to blob for upload
+      const response = await fetch(uploadedImage);
+      const blob = await response.blob();
+      const file = new File([blob], "source-image.jpg", { type: "image/jpeg" });
+
+      // Upload to Appwrite Storage
+      const STORAGE_BUCKET_ID = process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_ID || "ai-images";
+      let uploadedImageUrl = uploadedImage;
+
+      if (storage) {
+        try {
+          setProcessStep("Uploading to secure storage...");
+          setProcessProgress(25);
+
+          const uploadResult = await storage.createFile(
+            STORAGE_BUCKET_ID,
+            ID.unique(),
+            file
+          );
+
+          uploadedImageUrl = storage.getFilePreview(
+            STORAGE_BUCKET_ID,
+            uploadResult.$id
+          ).toString();
+        } catch (storageError) {
+          console.error("Storage upload failed, using base64:", storageError);
+        }
+      }
+
+      // Call API route for style transfer
+      setProcessStep("Processing with AI model...");
+      setProcessProgress(50);
+
+      const stylePreset = STYLE_PRESETS.find(s => s.id === selectedStyle);
+      const stylePrompt = `${stylePreset?.name} style: ${stylePreset?.description}. ${stylePreset?.name} artistic aesthetic, high quality, detailed`;
+
+      const apiResponse = await fetch("/api/style-transfer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          imageUrl: uploadedImageUrl,
+          stylePrompt,
+          userId: user?.id || "guest",
+        }),
+      });
+
+      const apiData = await apiResponse.json();
+
+      if (!apiResponse.ok || !apiData.success) {
+        throw new Error(apiData.error || "Style transfer failed");
+      }
+
+      setProcessStep("Finalizing result...");
+      setProcessProgress(90);
+
+      // Deduct credits
+      await spendCredits(2, `Style Transfer: ${stylePreset?.name}`);
+
+      // Save generation
+      await saveGeneration(
+        "style-transfer",
+        uploadedImageUrl,
+        apiData.outputImageUrl,
+        `${stylePreset?.name} Style`
+      );
+
+      setStyledImage(apiData.outputImageUrl);
+      setProcessProgress(100);
+      setProcessStep("");
+
+    } catch (error) {
+      console.error("Style transfer error:", error);
+      alert(`Style transfer failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setIsProcessing(false);
+      setProcessProgress(0);
+      setProcessStep("");
     }
-
-    await spendCredits(2, `Style Transfer: ${STYLE_PRESETS.find(s => s.id === selectedStyle)?.name}`);
-
-    const styleOutput = STYLE_PRESETS.find(s => s.id === selectedStyle)?.image || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=600&auto=format&fit=crop";
-    setStyledImage(styleOutput);
-
-    await saveGeneration(
-      "style-transfer",
-      uploadedImage,
-      styleOutput,
-      `${STYLE_PRESETS.find(s => s.id === selectedStyle)?.name} Style`
-    );
-
-    setIsProcessing(false);
-    setProcessProgress(0);
-    setProcessStep("");
   };
 
   const handleReset = () => {

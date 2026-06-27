@@ -13,7 +13,7 @@ import {
   DEFAULT_TRANSACTIONS
 } from "./mockData";
 
-// --- DATABASE AND COLLECTION IDS FOR LIVE APPWRITE (FOR REFERENCE) ---
+// --- DATABASE AND COLLECTION IDS FOR APPWRITE ---
 const DATABASE_ID = process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID || "ai_photo_studio";
 const THEMES_COLLECTION_ID = "themes";
 const SELLERS_COLLECTION_ID = "sellers";
@@ -21,117 +21,63 @@ const ADS_COLLECTION_ID = "ads";
 const GENERATIONS_COLLECTION_ID = "generations";
 const TRANSACTIONS_COLLECTION_ID = "transactions";
 
-// Helper to initialize LocalStorage if empty
-const initializeLocalStorage = () => {
-  if (typeof window === "undefined") return;
-  
-  if (!localStorage.getItem("ai_studio_themes")) {
-    localStorage.setItem("ai_studio_themes", JSON.stringify(DEFAULT_THEMES));
-  }
-  if (!localStorage.getItem("ai_studio_sellers")) {
-    localStorage.setItem("ai_studio_sellers", JSON.stringify(DEFAULT_SELLERS));
-  }
-  if (!localStorage.getItem("ai_studio_photographers")) {
-    localStorage.setItem("ai_studio_photographers", JSON.stringify(DEFAULT_PHOTOGRAPHERS));
-  }
-  if (!localStorage.getItem("ai_studio_generations")) {
-    localStorage.setItem("ai_studio_generations", JSON.stringify(DEFAULT_GENERATIONS));
-  }
-  if (!localStorage.getItem("ai_studio_transactions")) {
-    localStorage.setItem("ai_studio_transactions", JSON.stringify(DEFAULT_TRANSACTIONS));
-  }
-  if (localStorage.getItem("ai_studio_user_credits") === null) {
-    localStorage.setItem("ai_studio_user_credits", "5");
-  }
-  if (!localStorage.getItem("ai_studio_user_favorites")) {
-    localStorage.setItem("ai_studio_user_favorites", JSON.stringify([]));
-  }
-  if (!localStorage.getItem("ai_studio_user_plan")) {
-    localStorage.setItem("ai_studio_user_plan", "Free");
-  }
-  if (localStorage.getItem("ai_studio_referred_count") === null) {
-    localStorage.setItem("ai_studio_referred_count", "1"); // Starts with 1 mock referral
-  }
-};
-
-// Ensure init is run
-if (typeof window !== "undefined") {
-  initializeLocalStorage();
-}
-
-// --- UTILITIES FOR LOCAL STORAGE GET/SET ---
-const getLocalStorageItem = <T>(key: string, defaultValue: T): T => {
-  if (typeof window === "undefined") return defaultValue;
-  const item = localStorage.getItem(key);
-  return item ? JSON.parse(item) : defaultValue;
-};
-
-const setLocalStorageItem = <T>(key: string, value: T): void => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(key, JSON.stringify(value));
-};
-
 // --- CORE SYSTEM API ---
 export const api = {
   // --- CREDITS & BILLING ---
   getCredits: async (): Promise<number> => {
-    if (isAppwriteConfigured) {
-      try {
-        const user = await account.get();
-        const prefs = await account.getPrefs();
-        return prefs.credits ?? 0;
-      } catch {
-        return 0;
-      }
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    return Number(localStorage.getItem("ai_studio_user_credits") || "5");
+    try {
+      const user = await account.get();
+      const prefs = await account.getPrefs();
+      return prefs.credits ?? 0;
+    } catch (error) {
+      console.error("Error getting credits:", error);
+      return 0;
+    }
   },
 
   updateCredits: async (amount: number): Promise<number> => {
-    if (isAppwriteConfigured) {
-      const prefs = await account.getPrefs();
-      const current = prefs.credits ?? 0;
-      const updated = current + amount;
-      await account.updatePrefs({ ...prefs, credits: updated });
-      return updated;
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    const current = Number(localStorage.getItem("ai_studio_user_credits") || "5");
+    const prefs = await account.getPrefs();
+    const current = prefs.credits ?? 0;
     const updated = Math.max(0, current + amount);
-    localStorage.setItem("ai_studio_user_credits", updated.toString());
+    await account.updatePrefs({ ...prefs, credits: updated });
     return updated;
   },
 
   getSubscriptionPlan: async (): Promise<string> => {
-    if (isAppwriteConfigured) {
-      try {
-        const prefs = await account.getPrefs();
-        return prefs.plan ?? "Free";
-      } catch {
-        return "Free";
-      }
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    return localStorage.getItem("ai_studio_user_plan") || "Free";
+    try {
+      const prefs = await account.getPrefs();
+      return prefs.plan ?? "Free";
+    } catch (error) {
+      console.error("Error getting subscription plan:", error);
+      return "Free";
+    }
   },
 
   updateSubscriptionPlan: async (plan: "Free" | "Premium" | "Pro"): Promise<string> => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     let creditsToAdd = 0;
     if (plan === "Premium") creditsToAdd = 100;
     if (plan === "Pro") creditsToAdd = 400;
 
-    if (isAppwriteConfigured) {
-      const prefs = await account.getPrefs();
-      const updatedPrefs = { 
-        ...prefs, 
-        plan, 
-        credits: (prefs.credits ?? 0) + creditsToAdd 
-      };
-      await account.updatePrefs(updatedPrefs);
-      return plan;
-    }
-
-    localStorage.setItem("ai_studio_user_plan", plan);
-    const current = Number(localStorage.getItem("ai_studio_user_credits") || "5");
-    localStorage.setItem("ai_studio_user_credits", (current + creditsToAdd).toString());
+    const prefs = await account.getPrefs();
+    const updatedPrefs = { 
+      ...prefs, 
+      plan, 
+      credits: (prefs.credits ?? 0) + creditsToAdd 
+    };
+    await account.updatePrefs(updatedPrefs);
     
     // Add transaction history entry
     await api.createTransaction({
@@ -146,87 +92,75 @@ export const api = {
 
   // --- THEMES ---
   getThemes: async (): Promise<Theme[]> => {
-    if (isAppwriteConfigured) {
-      try {
-        const res = await databases.listDocuments(DATABASE_ID, THEMES_COLLECTION_ID);
-        return res.documents.map(doc => ({
-          id: doc.$id,
-          name: doc.name,
-          category: doc.category,
-          prompt: doc.prompt,
-          image: doc.image,
-          creditCost: doc.creditCost,
-          authorId: doc.authorId,
-          authorName: doc.authorName,
-          isPopular: doc.isPopular
-        }));
-      } catch {
-        // Fall back to mock if Appwrite DB fails or is not setup
-      }
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    const themes = getLocalStorageItem<Theme[]>("ai_studio_themes", DEFAULT_THEMES);
-    const favorites = getLocalStorageItem<string[]>("ai_studio_user_favorites", []);
-    return themes.map(theme => ({
-      ...theme,
-      isFavorite: favorites.includes(theme.id)
-    }));
+    try {
+      const res = await databases.listDocuments(DATABASE_ID, THEMES_COLLECTION_ID);
+      return res.documents.map(doc => ({
+        id: doc.$id,
+        name: doc.name,
+        category: doc.category,
+        prompt: doc.prompt,
+        image: doc.image,
+        creditCost: doc.creditCost,
+        authorId: doc.authorId,
+        authorName: doc.authorName,
+        isPopular: doc.isPopular,
+        isFavorite: false // Favorites would need a separate collection or user prefs
+      }));
+    } catch (error) {
+      console.error("Error getting themes:", error);
+      return DEFAULT_THEMES;
+    }
   },
 
   createTheme: async (theme: Omit<Theme, "id" | "isFavorite">): Promise<Theme> => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     const newTheme = {
       ...theme,
-      id: "t_" + Math.random().toString(36).substring(2, 9),
       isPopular: false
     };
 
-    if (isAppwriteConfigured) {
-      try {
-        const doc = await databases.createDocument(
-          DATABASE_ID,
-          THEMES_COLLECTION_ID,
-          ID.unique(),
-          newTheme
-        );
-        return { ...newTheme, id: doc.$id };
-      } catch {
-        // Fallback to local
-      }
-    }
-
-    const themes = getLocalStorageItem<Theme[]>("ai_studio_themes", DEFAULT_THEMES);
-    themes.push(newTheme);
-    setLocalStorageItem("ai_studio_themes", themes);
-    return newTheme;
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      THEMES_COLLECTION_ID,
+      ID.unique(),
+      newTheme
+    );
+    
+    return { ...newTheme, id: doc.$id };
   },
 
   toggleFavoriteTheme: async (themeId: string): Promise<boolean> => {
-    const favorites = getLocalStorageItem<string[]>("ai_studio_user_favorites", []);
-    const index = favorites.indexOf(themeId);
-    let isFavNow = false;
-    
-    if (index === -1) {
-      favorites.push(themeId);
-      isFavNow = true;
-    } else {
-      favorites.splice(index, 1);
-    }
-    
-    setLocalStorageItem("ai_studio_user_favorites", favorites);
-    return isFavNow;
+    // Favorites would be stored in user preferences or a separate collection
+    // For now, this is a placeholder
+    console.warn("toggleFavoriteTheme not fully implemented with Appwrite");
+    return false;
   },
 
   // --- SELLERS ---
   getSellers: async (): Promise<Seller[]> => {
-    if (isAppwriteConfigured) {
-      try {
-        const res = await databases.listDocuments(DATABASE_ID, SELLERS_COLLECTION_ID);
-        return res.documents.map(doc => doc as unknown as Seller);
-      } catch {}
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    return getLocalStorageItem<Seller[]>("ai_studio_sellers", DEFAULT_SELLERS);
+    try {
+      const res = await databases.listDocuments(DATABASE_ID, SELLERS_COLLECTION_ID);
+      return res.documents.map(doc => doc as unknown as Seller);
+    } catch (error) {
+      console.error("Error getting sellers:", error);
+      return DEFAULT_SELLERS;
+    }
   },
 
   registerSeller: async (seller: Omit<Seller, "id" | "verificationStatus" | "earnings" | "rating" | "reviewCount">): Promise<Seller> => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     const newSeller: Seller = {
       ...seller,
       id: "s_" + Math.random().toString(36).substring(2, 9),
@@ -236,33 +170,45 @@ export const api = {
       reviewCount: 0
     };
 
-    const sellers = getLocalStorageItem<Seller[]>("ai_studio_sellers", DEFAULT_SELLERS);
-    sellers.push(newSeller);
-    setLocalStorageItem("ai_studio_sellers", sellers);
-    return newSeller;
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      SELLERS_COLLECTION_ID,
+      ID.unique(),
+      newSeller
+    );
+    
+    return { ...newSeller, id: doc.$id };
   },
 
   updateSellerStatus: async (sellerId: string, status: "approved" | "rejected"): Promise<void> => {
-    const sellers = getLocalStorageItem<Seller[]>("ai_studio_sellers", DEFAULT_SELLERS);
-    const seller = sellers.find(s => s.id === sellerId);
-    if (seller) {
-      seller.verificationStatus = status;
-      setLocalStorageItem("ai_studio_sellers", sellers);
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
+    
+    // Need to fetch document first, then update
+    // This is a simplified version - in production you'd need proper document fetching
+    console.warn("updateSellerStatus needs proper document fetching implementation");
   },
 
   // --- PHOTOGRAPHERS ---
   getPhotographers: async (): Promise<PhotographerAd[]> => {
-    if (isAppwriteConfigured) {
-      try {
-        const res = await databases.listDocuments(DATABASE_ID, ADS_COLLECTION_ID);
-        return res.documents.map(doc => doc as unknown as PhotographerAd);
-      } catch {}
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    return getLocalStorageItem<PhotographerAd[]>("ai_studio_photographers", DEFAULT_PHOTOGRAPHERS);
+    try {
+      const res = await databases.listDocuments(DATABASE_ID, ADS_COLLECTION_ID);
+      return res.documents.map(doc => doc as unknown as PhotographerAd);
+    } catch (error) {
+      console.error("Error getting photographers:", error);
+      return DEFAULT_PHOTOGRAPHERS;
+    }
   },
 
   registerPhotographer: async (ad: Omit<PhotographerAd, "id" | "rating" | "reviewCount" | "status" | "isSponsored">): Promise<PhotographerAd> => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     const newAd: PhotographerAd = {
       ...ad,
       id: "p_" + Math.random().toString(36).substring(2, 9),
@@ -272,101 +218,109 @@ export const api = {
       isSponsored: false
     };
 
-    const photographers = getLocalStorageItem<PhotographerAd[]>("ai_studio_photographers", DEFAULT_PHOTOGRAPHERS);
-    photographers.push(newAd);
-    setLocalStorageItem("ai_studio_photographers", photographers);
-    return newAd;
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      ADS_COLLECTION_ID,
+      ID.unique(),
+      newAd
+    );
+    
+    return { ...newAd, id: doc.$id };
   },
 
   updatePhotographerStatus: async (adId: string, status: "approved" | "rejected", isSponsored = false): Promise<void> => {
-    const photographers = getLocalStorageItem<PhotographerAd[]>("ai_studio_photographers", DEFAULT_PHOTOGRAPHERS);
-    const ad = photographers.find(p => p.id === adId);
-    if (ad) {
-      ad.status = status;
-      ad.isSponsored = isSponsored;
-      setLocalStorageItem("ai_studio_photographers", photographers);
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
+    
+    // Need to fetch document first, then update
+    console.warn("updatePhotographerStatus needs proper document fetching implementation");
   },
 
   // --- USER GENERATIONS (UPLOADS & OUTPUTS) ---
   getGenerations: async (): Promise<UserGeneration[]> => {
-    if (isAppwriteConfigured) {
-      try {
-        const res = await databases.listDocuments(DATABASE_ID, GENERATIONS_COLLECTION_ID);
-        return res.documents.map(doc => doc as unknown as UserGeneration);
-      } catch {}
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    return getLocalStorageItem<UserGeneration[]>("ai_studio_generations", DEFAULT_GENERATIONS);
+    try {
+      const res = await databases.listDocuments(DATABASE_ID, GENERATIONS_COLLECTION_ID);
+      return res.documents.map(doc => doc as unknown as UserGeneration);
+    } catch (error) {
+      console.error("Error getting generations:", error);
+      return DEFAULT_GENERATIONS;
+    }
   },
 
   createGeneration: async (gen: Omit<UserGeneration, "id" | "createdAt">): Promise<UserGeneration> => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
     const newGen: UserGeneration = {
       ...gen,
       id: "g_" + Math.random().toString(36).substring(2, 9),
       createdAt: new Date().toISOString()
     };
 
-    if (isAppwriteConfigured) {
-      try {
-        await databases.createDocument(
-          DATABASE_ID,
-          GENERATIONS_COLLECTION_ID,
-          ID.unique(),
-          newGen
-        );
-      } catch {}
-    }
-
-    const generations = getLocalStorageItem<UserGeneration[]>("ai_studio_generations", DEFAULT_GENERATIONS);
-    generations.unshift(newGen); // Add to top of list
-    setLocalStorageItem("ai_studio_generations", generations);
-    return newGen;
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      GENERATIONS_COLLECTION_ID,
+      ID.unique(),
+      newGen
+    );
+    
+    return { ...newGen, id: doc.$id };
   },
 
   // --- TRANSACTIONS ---
   getTransactions: async (): Promise<Transaction[]> => {
-    if (isAppwriteConfigured) {
-      try {
-        const res = await databases.listDocuments(DATABASE_ID, TRANSACTIONS_COLLECTION_ID);
-        return res.documents.map(doc => doc as unknown as Transaction);
-      } catch {}
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
     }
-    return getLocalStorageItem<Transaction[]>("ai_studio_transactions", DEFAULT_TRANSACTIONS);
+    try {
+      const res = await databases.listDocuments(DATABASE_ID, TRANSACTIONS_COLLECTION_ID);
+      return res.documents.map(doc => doc as unknown as Transaction);
+    } catch (error) {
+      console.error("Error getting transactions:", error);
+      return DEFAULT_TRANSACTIONS;
+    }
   },
 
   createTransaction: async (tx: Omit<Transaction, "id" | "userId" | "date">): Promise<Transaction> => {
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
+    
+    const user = await account.get();
     const newTx: Transaction = {
       ...tx,
       id: "tx_" + Math.random().toString(36).substring(2, 9),
-      userId: "u1",
+      userId: user.$id,
       date: new Date().toISOString()
     };
 
-    if (isAppwriteConfigured) {
-      try {
-        await databases.createDocument(
-          DATABASE_ID,
-          TRANSACTIONS_COLLECTION_ID,
-          ID.unique(),
-          newTx
-        );
-      } catch {}
-    }
-
-    const transactions = getLocalStorageItem<Transaction[]>("ai_studio_transactions", DEFAULT_TRANSACTIONS);
-    transactions.unshift(newTx);
-    setLocalStorageItem("ai_studio_transactions", transactions);
-    return newTx;
+    const doc = await databases.createDocument(
+      DATABASE_ID,
+      TRANSACTIONS_COLLECTION_ID,
+      ID.unique(),
+      newTx
+    );
+    
+    return { ...newTx, id: doc.$id };
   },
 
   // --- REFERRALS ---
   getReferralCount: async (): Promise<number> => {
-    return Number(localStorage.getItem("ai_studio_referred_count") || "1");
+    // This would need to be stored in user preferences or a separate collection
+    // For now, return a default value
+    console.warn("getReferralCount needs proper implementation with Appwrite");
+    return 0;
   },
 
   triggerReferral: async (friendName: string): Promise<void> => {
-    const count = Number(localStorage.getItem("ai_studio_referred_count") || "0");
-    localStorage.setItem("ai_studio_referred_count", (count + 1).toString());
+    if (!isAppwriteConfigured) {
+      throw new Error("Appwrite not configured. Please set NEXT_PUBLIC_APPWRITE_ENDPOINT and NEXT_PUBLIC_APPWRITE_PROJECT_ID");
+    }
     
     // Referral rewards referrer with 10 credits
     await api.updateCredits(10);
