@@ -294,7 +294,7 @@ export default function StyleTransferPage() {
               <div className="space-y-4">
                 <div className="relative aspect-square rounded-xl overflow-hidden border border-white/10">
                   <img
-                    src={showBefore ? uploadedImage : styledImage}
+                    src={(showBefore ? uploadedImage : styledImage) || ""}
                     alt={showBefore ? "Before" : "After"}
                     className="w-full h-full object-cover"
                   />
